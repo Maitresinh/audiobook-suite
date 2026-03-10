@@ -1,0 +1,11 @@
+FROM athomasson2/ebook2audiobook:cu128
+
+RUN sed -i "s/if not devices\['CUDA'\]\['found'\]:/import torch\n                                if not torch.cuda.is_available():/" /app/lib/core.py
+
+RUN sed -i "s|audiobooks_gradio_dir = os.path.abspath(os.path.join('audiobooks','gui','gradio'))|audiobooks_gradio_dir = os.path.abspath('audiobooks')|" /app/lib/conf.py && \
+    sed -i "s|audiobooks_host_dir = os.path.abspath(os.path.join('audiobooks','gui','host'))|audiobooks_host_dir = os.path.abspath('audiobooks')|" /app/lib/conf.py
+
+COPY audiobook_studio.py /app/audiobook_studio.py
+
+RUN grep -q "cuda.is_available" /app/lib/core.py && echo "✓ CUDA patch OK" || (echo "✗ CUDA patch FAILED" && exit 1)
+RUN grep -q "os.path.abspath('audiobooks')" /app/lib/conf.py && echo "✓ Output dir patch OK" || (echo "✗ Output dir patch FAILED" && exit 1)
