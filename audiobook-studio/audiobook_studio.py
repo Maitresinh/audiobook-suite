@@ -86,12 +86,30 @@ def tag_chunk(chunk: str, characters: list, voice_map: dict) -> str:
     char_list   = "\n".join([f"- {c['name']} ({c['role']})" for c in characters])
     voice_paths = "\n".join([f"- {name}: {path}" for name, path in voice_map.items() if path])
     system = """Tu es un tagueur de texte pour la production d'audiobooks.
-Règles :
-- Entoure chaque réplique avec [voice:/chemin]...[/voice] en utilisant les chemins exacts fournis
-- Entoure les passages narrateurs avec le chemin voix du NARRATEUR
-- Ajoute des marqueurs d'émotion Bark DANS les balises voice si approprié : [laughs] [sighs] [whispers] [gasps] [clears throat]
-- Conserve TOUT le texte original intact, ajoute UNIQUEMENT les balises
-- Retourne UNIQUEMENT le texte balisé, sans explication"""
+
+FORMAT OBLIGATOIRE — respecte-le à la lettre :
+[voice:/app/voices/FICHIER.wav]texte ici[/voice]
+
+RÈGLES ABSOLUES :
+1. La balise ouvrante est TOUJOURS [voice:/chemin/exact.wav] — JAMAIS [narrator:...], JAMAIS [yuli:...], JAMAIS [voice/...]
+2. La balise fermante est TOUJOURS [/voice] — ne jamais l'omettre
+3. Ne JAMAIS imbriquer des balises [voice:] à l'intérieur d'autres balises [voice:]
+4. Tout le texte doit être encadré — aucun texte nu hors balises
+5. Utilise UNIQUEMENT les chemins de voix fournis ci-dessous, mot pour mot
+6. Marqueurs d'émotion Bark autorisés DANS le texte : [laughs] [sighs] [whispers] [gasps] [clears throat]
+7. Retourne UNIQUEMENT le texte balisé, sans explication ni commentaire
+
+EXEMPLE CORRECT :
+[voice:/app/voices/Jean-Topart.wav]Il poussa la porte lentement.[/voice]
+[voice:/app/voices/Narrateur.wav]— Qui es-tu ? demanda-t-il.[/voice]
+[voice:/app/voices/Jean-Topart.wav]— Je suis le vent. [whispers] Écoute.[/voice]
+
+EXEMPLES INTERDITS :
+[narrator:/app/voices/Jean-Topart.wav] texte    ← INTERDIT
+[yuli:/app/voices/Narrateur.wav] texte           ← INTERDIT
+[voice/app/voices/Narrateur.wav] texte           ← INTERDIT
+texte sans balise                                 ← INTERDIT
+[voice:/app/voices/A.wav][voice:/app/voices/B.wav]texte[/voice][/voice]  ← INTERDIT"""
     prompt = f"Personnages :\n{char_list}\n\nVoix assignées :\n{voice_paths}\n\nTague ce texte :\n---\n{chunk}\n---"
     return ollama_generate(prompt, system)
 
@@ -105,6 +123,12 @@ state = {
     "tagged_path":   "",
     "conversion":    {"running": False, "progress": 0.0, "log": "", "done": False, "error": ""}
 }
+
+# Auto-load tagged file if it exists
+_default_tagged = os.path.join(EBOOKS_DIR, "tagged_output.txt")
+if Path(_default_tagged).exists():
+    state["tagged_path"] = _default_tagged
+    print(f"✅ Auto-loaded existing tagged file: {_default_tagged}")
 
 # ─────────────────────────────────────────
 # Tab 1 — Analyse
@@ -202,31 +226,40 @@ def do_launch_e2a(language, default_voice_path, output_subdir,
         "--headless",
         "--ebook",          state["tagged_path"],
         "--tts_engine",     "bark",
-        "--device",         "cuda",
+        "--device",         "CUDA",
         "--language",       language,
         "--output_format",  output_format,
         "--output_dir",     out_dir,
-        "--bark_text_temp",     str(bark_temp),
-        "--bark_waveform_temp", str(bark_waveform_temp),
+        "--text_temp",     str(bark_temp),
+        "--waveform_temp", str(bark_waveform_temp),
     ]
     if default_voice_path:
         cmd += ["--voice", default_voice_path]
     state["conversion"] = {"running": True, "progress": 0.0, "log": "", "done": False, "error": ""}
 
     def _run():
+        e2a_log = "/tmp/e2a_conversion.log"
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for line in proc.stdout:
-                line = line.rstrip()
-                state["conversion"]["log"] = line
-                m = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
-                if m:
-                    state["conversion"]["progress"] = float(m.group(1)) / 100.0
+            with open(e2a_log, "w") as logf:
+                logf.write(f"CMD: {' '.join(cmd)}\n\n")
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    logf.write(line + "\n")
+                    logf.flush()
+                    state["conversion"]["log"] = line
+                    m = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
+                    if m:
+                        state["conversion"]["progress"] = float(m.group(1)) / 100.0
             proc.wait()
             state["conversion"]["running"] = False
             state["conversion"]["done"]    = True
             if proc.returncode != 0:
-                state["conversion"]["error"] = f"Exit code {proc.returncode}"
+                # Read last 20 lines of log for error context
+                with open(e2a_log) as f:
+                    lines = f.readlines()
+                last = "".join(lines[-20:])
+                state["conversion"]["error"] = f"Exit code {proc.returncode}\n{last}"
         except Exception as e:
             state["conversion"]["running"] = False
             state["conversion"]["error"]   = str(e)
@@ -311,6 +344,25 @@ with gr.Blocks(title="🎙️ Audiobook Studio", theme=gr.themes.Soft()) as demo
             gen_prev   = gr.Textbox(label="Aperçu", lines=12, interactive=False)
             gen_btn.click(do_generate_tagged, [], [gen_status, gen_prev])
 
+            gr.Markdown("**Ou charger un fichier balisé existant :**")
+            with gr.Row():
+                existing_path = gr.Textbox(
+                    value=os.path.join(EBOOKS_DIR, "tagged_output.txt"),
+                    label="Chemin du fichier balisé",
+                    scale=4
+                )
+                load_btn = gr.Button("📂 Charger", variant="secondary", scale=1)
+            load_status = gr.Textbox(label="", interactive=False)
+
+            def do_load_tagged(path):
+                if not path or not Path(path).exists():
+                    return f"❌ Fichier introuvable : {path}"
+                state["tagged_path"] = path
+                size = Path(path).stat().st_size // 1024
+                return f"✅ Fichier chargé : {path} ({size} KB)"
+
+            load_btn.click(do_load_tagged, [existing_path], [load_status])
+
             gr.Markdown("---\n### Étape 2 — Configurer et lancer ebook2audiobook")
             with gr.Row():
                 with gr.Column():
@@ -326,21 +378,22 @@ with gr.Blocks(title="🎙️ Audiobook Studio", theme=gr.themes.Soft()) as demo
                     bark_temp_in   = gr.Slider(0.1, 1.0, value=0.7, step=0.05, label="Bark text temperature")
                     bark_wform_in  = gr.Slider(0.1, 1.0, value=0.7, step=0.05, label="Bark waveform temperature")
 
-            launch_btn = gr.Button("🎬 Lancer la conversion", variant="primary", size="lg")
-            launch_st  = gr.Textbox(label="", interactive=False)
+            with gr.Row():
+                launch_btn = gr.Button("🎬 Lancer la conversion", variant="primary", size="lg")
+                launch_st  = gr.Textbox(label="", interactive=False)
 
             gr.Markdown("---\n### Progression")
             prog_bar   = gr.Slider(0, 1, value=0, label="Progression", interactive=False)
             prog_log   = gr.Textbox(label="Étape en cours", interactive=False)
-            timer      = gr.Timer(value=3)
+            refresh_prog = gr.Button("🔄 Rafraîchir la progression")
 
             refresh_v2.click(refresh_voices, [], [def_voice_dd])
             launch_btn.click(
-                do_launch_e2a,
-                [lang_in, def_voice_dd, out_dir_in, bark_temp_in, bark_wform_in, fmt_in],
-                [launch_st]
+                fn=do_launch_e2a,
+                inputs=[lang_in, def_voice_dd, out_dir_in, bark_temp_in, bark_wform_in, fmt_in],
+                outputs=[launch_st]
             )
-            timer.tick(poll_progress, [], [prog_bar, prog_log])
+            refresh_prog.click(poll_progress, [], [prog_bar, prog_log])
 
 if __name__ == "__main__":
     print(f"🎙️  Audiobook Studio on port {PORT}")
