@@ -12,7 +12,7 @@ from pathlib import Path
 # Config
 # ─────────────────────────────────────────
 OLLAMA_URL   = os.environ.get("OLLAMA_URL",   "http://172.17.0.18:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral:7b-instruct")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral-small3.1:latest")
 VOICES_DIR   = os.environ.get("VOICES_DIR",   "/app/voices")
 EBOOKS_DIR   = os.environ.get("EBOOKS_DIR",   "/app/ebooks")
 AUDIOBOOKS_DIR = os.environ.get("AUDIOBOOKS_DIR", "/app/audiobooks")
